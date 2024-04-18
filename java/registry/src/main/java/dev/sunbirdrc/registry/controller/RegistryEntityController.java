@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.sunbirdrc.pojos.AsyncRequest;
 import dev.sunbirdrc.pojos.PluginResponseMessage;
 import dev.sunbirdrc.pojos.Response;
@@ -16,6 +17,7 @@ import dev.sunbirdrc.registry.exception.AttestationNotFoundException;
 import dev.sunbirdrc.registry.exception.ErrorMessages;
 import dev.sunbirdrc.registry.exception.RecordNotFoundException;
 import dev.sunbirdrc.registry.exception.UnAuthorizedException;
+import dev.sunbirdrc.registry.helper.RegistryHelper;
 import dev.sunbirdrc.registry.identity_providers.pojos.IdentityException;
 import dev.sunbirdrc.registry.exception.UnreachableException;
 import dev.sunbirdrc.registry.middleware.MiddlewareHaltException;
@@ -83,6 +85,9 @@ public class RegistryEntityController extends AbstractController {
     boolean securityEnabled;
     @Value("${certificate.enableExternalTemplates:false}")
     boolean externalTemplatesEnabled;
+    
+    @Value("${cord.anchorToCord:true}")
+    boolean anchorToCord;
 
     @RequestMapping(value = "/api/v1/{entityName}/invite", method = RequestMethod.POST)
     public ResponseEntity<Object> invite(
@@ -300,10 +305,21 @@ public class RegistryEntityController extends AbstractController {
         Response response = new Response(Response.API_ID.POST, "OK", responseParams);
         Map<String, Object> result = new HashMap<>();
         ObjectNode newRootNode = objectMapper.createObjectNode();
-        newRootNode.set(entityName, rootNode);
-
+        // newRootNode.set(entityName, rootNode);
+        
         try {
             checkEntityNameInDefinitionManager(entityName);
+            if (anchorToCord) { 
+                if("Schema".equals(entityName)){
+                  JsonNode getRootNode=registryHelper.anchorToCord(rootNode);
+                  newRootNode.set(entityName, getRootNode);
+                }else{
+                  newRootNode.set(entityName,rootNode);
+                }
+                return new ResponseEntity<>(response, HttpStatus.OK);
+            }else{
+                  newRootNode.set(entityName, rootNode);
+            }
             String userId = registryHelper.authorizeManageEntity(request, entityName);
             String label = registryHelper.addEntity(newRootNode, userId, true);
             String emailId = registryHelper.fetchEmailIdFromToken(request, entityName);
@@ -314,6 +330,8 @@ public class RegistryEntityController extends AbstractController {
                 registryHelper.autoRaiseClaim(entityName, label, userId, null, newRootNode, emailId);
                 resultMap.put(dbConnectionInfoMgr.getUuidPropertyName(), label);
             }
+            if(anchorToCord && !"Schema".equals(entityName)) 
+                registryHelper.anchorCredentialsToCord(entityName,rootNode);
             result.put(entityName, resultMap);
             response.setResult(result);
             responseParams.setStatus(Response.Status.SUCCESSFUL);

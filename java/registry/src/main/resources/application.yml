@@ -79,6 +79,10 @@ registry:
   redis:
     host: ${redis_host:localhost}
     port: ${redis_port:6379}
+  cord:
+    anchorToCord: ${anchor_to_cord:true}
+    issuerSchemaUrl: ${issuer_schema_url:http://172.17.0.1:5106/api/v1/schema}
+    issuerCredentialUrl: ${issuer_credential_url:http://172.17.0.1:5106/api/v1/cred}
   hard_delete_enabled: ${hard_delete_enabled:false}
   expandReference: ${expand_reference:false}
 workflow:

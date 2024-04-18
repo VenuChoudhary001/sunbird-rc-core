@@ -65,7 +65,10 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 import org.springframework.util.DigestUtils;
 import org.springframework.web.bind.annotation.PathVariable;
-
+import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.http.MediaType;
+import reactor.core.publisher.Mono;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import javax.servlet.http.HttpServletRequest;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -79,6 +82,8 @@ import static dev.sunbirdrc.registry.exception.ErrorMessages.*;
 import static dev.sunbirdrc.registry.middleware.util.Constants.*;
 import static dev.sunbirdrc.registry.middleware.util.OSSystemFields.*;
 
+import static dev.sunbirdrc.registry.middleware.util.OSSystemFields._osState;
+import static dev.sunbirdrc.registry.middleware.util.OSSystemFields.osOwner;
 /**
  * This is helper class, user-service calls this class in-order to access registry functionality
  */
@@ -93,11 +98,14 @@ public class RegistryHelper {
     public static String ROLE_ANONYMOUS = "anonymous";
 
     private static final Logger logger = LoggerFactory.getLogger(RegistryHelper.class);
+    private final  WebClient.Builder builder = WebClient.builder();
 
     @Value("${authentication.enabled:true}") boolean securityEnabled;
     @Value("${notification.service.enabled}") boolean notificationEnabled;
     @Value("${invite.required_validation_enabled}") boolean skipRequiredValidationForInvite = true;
     @Value("${invite.signature_enabled}") boolean skipSignatureForInvite = true;
+    @Value("${registry.cord.issuerSchemaUrl}") String issuerSchemaUrl;
+    @Value("${registry.cord.issuerCredentialUrl}") String issuerCredentialUrl;
     @Autowired(required = false)
     private NotificationHelper notificationHelper;
     @Autowired
@@ -205,6 +213,111 @@ public class RegistryHelper {
             return node;
         }
         return requestBody;
+    }
+
+
+    public JsonNode apiHelper(JsonNode obj,String url) throws Exception{
+        try{
+            Mono<JsonNode> responseMono = this.builder.build()
+                    .post()
+                    .uri(url)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .accept(MediaType.APPLICATION_JSON)
+                    .bodyValue(obj)
+                    .retrieve()
+                    .bodyToMono(JsonNode.class)
+                    .onErrorResume(throwable -> {
+                        throwable.printStackTrace();
+                        return Mono.empty();
+                    });
+
+            JsonNode response = responseMono.block();
+            return response;
+        }catch(Exception e){
+            logger.error("Exception occurred !" , e);
+            return new ObjectMapper().createObjectNode().put("ERROR ","exception caught");
+        }
+    }
+
+
+     /** Anchors schema to the CORD CHAIN*/
+    public JsonNode anchorSchemaAPI(JsonNode obj) throws Exception{
+        JsonNode schema=apiHelper(obj,issuerSchemaUrl);
+        return schema;
+    }
+
+    /** Helper function for Anchoring to CORD */
+    public JsonNode anchorToCord(JsonNode rootNode) throws Exception{
+        try{
+
+        ObjectMapper objectMapper=new ObjectMapper();
+            /* anchor schema */
+        JsonNode schemaProperty=rootNode.get("schema");
+        JsonNode convertedSchema=objectMapper.readTree(schemaProperty.asText());
+
+        JsonNode schemaNode=convertedSchema.get("definitions");
+
+        JsonNode properties=schemaNode.get(rootNode.get("name").asText());
+
+        JsonNode createSchema=objectMapper.createObjectNode()
+        .put("title",convertedSchema.get("title").asText())
+        .put("description",convertedSchema.get("description").asText())
+        .set("properties",properties.get("properties"));
+
+        JsonNode schemaToBeAnchored=objectMapper.createObjectNode()
+        .set("schema",createSchema);
+
+        JsonNode anchoredSchema=anchorSchemaAPI(schemaToBeAnchored);
+        logger.info("ANCHORED SCHEMA TO CORD CHAIN  {}",anchoredSchema);
+
+        ((ObjectNode)rootNode).set("cord_schema_id", anchoredSchema.get("schemaId"));
+
+            return rootNode;
+        }catch(Exception e){
+            logger.error("ERROR {}",e);
+            return objectMapper.createObjectNode().put("ERROR","Exception occurred");
+        }
+
+    }
+
+    public void anchorCredentialsToCord(String schemaName,JsonNode credentials) throws Exception{
+        try {
+             ObjectMapper objectMapper = new ObjectMapper();
+             JsonNode filterProperty=objectMapper.createObjectNode()
+             .put("eq",schemaName);
+             JsonNode inputJson=objectMapper.createObjectNode()
+             .set("name",filterProperty);
+             ArrayNode entity = JsonNodeFactory.instance.arrayNode();
+             entity.add("Schema");
+             JsonNode newNode= objectMapper.createObjectNode()
+             .put("limit",1)
+             .put("offset",0)
+             .set("filters",inputJson);
+             ((ObjectNode)newNode).set(ENTITY_TYPE,entity   );
+             JsonNode getDetails=searchEntity(newNode,"");
+
+             JsonNode schemaArray=getDetails.get("Schema");
+             JsonNode firstSchema = schemaArray.get(0);
+             appendCredentialsToCord(firstSchema.get("cord_schema_id").asText(), credentials);
+
+        } catch (Exception e) {
+            logger.error("EXCEPTION OCCURRED",e);
+        }   
+    }
+
+    private void appendCredentialsToCord(String schemaId,JsonNode document){
+        try {
+            ObjectNode documentObject = (ObjectNode) document;
+            if(documentObject.has("osid")) documentObject.remove("osid");
+            if(documentObject.has("osOwner")) documentObject.remove("osOwner");
+            JsonNode rootNode=new ObjectMapper().createObjectNode()
+            .put("schemaId",schemaId)
+            .set("properties",documentObject);
+
+            JsonNode anchorVC=apiHelper(rootNode,issuerCredentialUrl);
+        } catch (Exception e) {
+            logger.error("EXCEPTION OCCURRED WHILE APPENDING TO CORD");
+        }
     }
 
     /**
